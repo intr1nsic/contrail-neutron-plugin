@@ -13,8 +13,10 @@
 #    under the License.
 #
 # @author: Hampapur Ajay, Praneet Bachheti, Rudra Rugge, Atul Moghe
-
-from oslo.config import cfg
+try:
+    from oslo_config import cfg
+except ImportError:
+    from oslo.config import cfg
 import requests
 
 from neutron.api.v2 import attributes as attr
@@ -43,14 +45,9 @@ except ImportError:
     from oslo_log import log as logging
 
 from simplejson import JSONDecodeError
-from cfgm_common import utils as cfgmutils
+from eventlet.greenthread import getcurrent
 
 LOG = logging.getLogger(__name__)
-
-_DEFAULT_KS_CERT_BUNDLE="/tmp/keystonecertbundle.pem"
-_DEFAULT_API_CERT_BUNDLE="/tmp/apiservercertbundle.pem"
-_DEFAULT_SERVER_CONNECT="http"
-_DEFAULT_SECURE_SERVER_CONNECT="https"
 
 vnc_opts = [
     cfg.StrOpt('api_server_ip', default='127.0.0.1',
@@ -59,16 +56,6 @@ vnc_opts = [
                help='Port to connect to VNC controller'),
     cfg.DictOpt('contrail_extensions', default={},
                 help='Enable Contrail extensions(policy, ipam)'),
-    cfg.BoolOpt('use_ssl', default=False,
-               help='Use SSL to connect with VNC controller'),
-    cfg.BoolOpt('insecure', default=False,
-               help='Insecurely connect to VNC controller'),
-    cfg.StrOpt('certfile', default='',
-               help='certfile to connect securely to VNC controller'),
-    cfg.StrOpt('keyfile', default='',
-               help='keyfile to connect securely to  VNC controller'),
-    cfg.StrOpt('cafile', default='',
-               help='cafile to connect securely to VNC controller'),
 ]
 
 analytics_opts = [
@@ -80,6 +67,7 @@ analytics_opts = [
 
 class InvalidContrailExtensionError(exc.ServiceUnavailable):
     message = _("Invalid Contrail Extension: %(ext_name) %(ext_class)")
+
 
 class NeutronPluginContrailCoreV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
                                   securitygroup.SecurityGroupPluginBase,
@@ -95,7 +83,6 @@ class NeutronPluginContrailCoreV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
 
     # patch VIF_TYPES
     portbindings.__dict__['VIF_TYPE_VROUTER'] = 'vrouter'
-    portbindings.VIF_TYPES.append(portbindings.VIF_TYPE_VROUTER)
 
     def _parse_class_args(self):
         """Parse the contrailplugin.ini file.
@@ -148,37 +135,6 @@ class NeutronPluginContrailCoreV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
                 cfg.CONF.keystone_authtoken.auth_port,
                 "/v2.0/tokens")
 
-            #Keystone SSL Support
-            self._ksinsecure=cfg.CONF.keystone_authtoken.insecure
-            kscertfile=cfg.CONF.keystone_authtoken.certfile
-            kskeyfile=cfg.CONF.keystone_authtoken.keyfile
-            kscafile=cfg.CONF.keystone_authtoken.cafile
-
-            self._use_ks_certs=False
-            if kscertfile and kskeyfile and kscafile \
-               and cfg.CONF.keystone_authtoken.auth_protocol == _DEFAULT_SECURE_SERVER_CONNECT:
-                   certs=[kscertfile, kskeyfile, kscafile]
-                   self._kscertbundle=cfgmutils.getCertKeyCaBundle(_DEFAULT_KS_CERT_BUNDLE,certs)
-                   self._use_ks_certs=True
-
-        #API Server SSL support
-        self._apiusessl=cfg.CONF.APISERVER.use_ssl
-        self._apiinsecure=cfg.CONF.APISERVER.insecure
-        apicertfile=cfg.CONF.APISERVER.certfile
-        apikeyfile=cfg.CONF.APISERVER.keyfile
-        apicafile=cfg.CONF.APISERVER.cafile
-
-        if self._apiusessl:
-            self._apiserverconnect=_DEFAULT_SECURE_SERVER_CONNECT
-        else:
-            self._apiserverconnect=_DEFAULT_SERVER_CONNECT
-
-        self._use_api_certs=False
-        if apicertfile and apikeyfile and apicafile and self._apiusessl:
-               certs=[apicertfile, apikeyfile, apicafile]
-               self._apicertbundle=cfgmutils.getCertKeyCaBundle(_DEFAULT_API_CERT_BUNDLE,certs)
-               self._use_api_certs=True
-
     def __init__(self):
         super(NeutronPluginContrailCoreV2, self).__init__()
         portbindings_base.register_port_dict_function()
@@ -208,26 +164,12 @@ class NeutronPluginContrailCoreV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
 
     def _request_api_server(self, url, data=None, headers=None):
         # Attempt to post to Api-Server
-        if self._apiinsecure:
-             response = requests.post(url, data=data, headers=headers,verify=False)
-        elif not self._apiinsecure and self._use_api_certs:
-             response = requests.post(url, data=data, headers=headers,verify=self._apicertbundle)
-        else:
-             response = requests.post(url, data=data, headers=headers)
+        response = requests.post(url, data=data, headers=headers)
         if (response.status_code == requests.codes.unauthorized):
             # Get token from keystone and save it for next request
-            if self._ksinsecure:
-               response = requests.post(self._keystone_url,
-                                        data=self._authn_body,
-                                        headers={'Content-type': 'application/json'},verify=False)
-            elif not self._ksinsecure and self._use_ks_certs:
-               response = requests.post(self._keystone_url,
-                                        data=self._authn_body,
-                                        headers={'Content-type': 'application/json'},verify=self._kscertbundle)
-            else:
-               response = requests.post(self._keystone_url,
-                                        data=self._authn_body,
-                                        headers={'Content-type': 'application/json'})
+            response = requests.post(self._keystone_url,
+                data=self._authn_body,
+                headers={'Content-type': 'application/json'})
             if (response.status_code == requests.codes.ok):
                 # plan is to re-issue original request with new token
                 auth_headers = headers or {}
@@ -240,19 +182,25 @@ class NeutronPluginContrailCoreV2(neutron_plugin_base_v2.NeutronPluginBaseV2,
         return response
 
     def _request_api_server_authn(self, url, data=None, headers=None):
+        # forward user token to API server for RBAC
+        # token saved earlier in the pipeline
+        try:
+            auth_token = getcurrent().contrail_vars.token
+        except AttributeError:
+            auth_token = None
+
         authn_headers = headers or {}
-        if self._authn_token is not None:
-            authn_headers['X-AUTH-TOKEN'] = self._authn_token
+        if auth_token or self._authn_token:
+            authn_headers['X-AUTH-TOKEN'] = auth_token or self._authn_token
         response = self._request_api_server(url, data, headers=authn_headers)
         return response
 
     def _relay_request(self, url_path, data=None):
         """Send received request to api server."""
 
-        url = "%s://%s:%s%s" % (self._apiserverconnect,
-                                cfg.CONF.APISERVER.api_server_ip,
-                                cfg.CONF.APISERVER.api_server_port,
-                                url_path)
+        url = "http://%s:%s%s" % (cfg.CONF.APISERVER.api_server_ip,
+                                  cfg.CONF.APISERVER.api_server_port,
+                                  url_path)
 
         return self._request_api_server_authn(
             url, data=data, headers={'Content-type': 'application/json'})

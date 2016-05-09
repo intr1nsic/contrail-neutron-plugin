@@ -8,7 +8,11 @@ try:
 except ImportError:
     from oslo_log import log as logging
 
-from oslo.config import cfg
+try:
+    from oslo.config import cfg
+except ImportError:
+    from oslo_config import cfg
+
 from httplib2 import Http
 import re
 import string
@@ -19,6 +23,11 @@ import requests
 
 from cfgm_common import exceptions as vnc_exc
 from vnc_api import vnc_api
+
+try:
+    from neutron.db.quota import api as quota_api
+except ImportError:
+    pass
 
 LOG = logging.getLogger(__name__)
 
@@ -62,12 +71,27 @@ class QuotaDriver(object):
                     cfg.CONF.APISERVER.api_server_port,
                     auth_host=cfg.CONF.keystone_authtoken.auth_host,
                     auth_port=cfg.CONF.keystone_authtoken.auth_port,
-                    auth_protocol=cfg.CONF.keystone_authtoken.auth_protocol,
-                    api_server_use_ssl=cfg.CONF.APISERVER.use_ssl)
+                    auth_protocol=cfg.CONF.keystone_authtoken.auth_protocol)
                 return vnc_conn
             except requests.exceptions.RequestException as e:
                 time.sleep(3)
     # end _get_vnc_conn
+
+    def make_reservation(self, context, tenant_id, resources, deltas, plugin):
+        """This driver does not support reservations.
+
+        This routine is provided for backward compatibility purposes with
+        the API controllers which have now been adapted to make reservations
+        rather than counting resources and checking limits - as this
+        routine ultimately does.
+        """
+        return quota_api.ReservationInfo('fake', None, None, None)
+
+    def commit_reservation(self, context, reservation_id):
+        """Tnis is a noop as this driver does not support reservations."""
+
+    def cancel_reservation(self, context, reservation_id):
+        """Tnis is a noop as this driver does not support reservations."""
 
     def limit_check(self, context, tenant_id,
                     resources, values):

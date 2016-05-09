@@ -4,11 +4,16 @@
 
 import uuid
 
-from oslo.config import cfg
-from cfgm_common import analytics_client
-from neutron.extensions import loadbalancer
-from neutron.openstack.common import uuidutils
-from neutron.plugins.common import constants
+try:
+    from neutron.extensions import loadbalancer
+except ImportError:
+    from neutron_lbaas.extensions import loadbalancer
+
+try:
+    from neutron.openstack.common import uuidutils
+except ImportError:
+    from oslo_utils import uuidutils
+
 from vnc_api.vnc_api import IdPermsType, NoIdError
 from vnc_api.vnc_api import LoadbalancerMember, LoadbalancerMemberType
 
@@ -38,29 +43,6 @@ class LoadbalancerMemberManager(ResourceManager):
     def _get_member_pool_id(self, member):
         pool_uuid = member.parent_uuid
         return pool_uuid
-
-    def _get_object_status(self, member):
-        endpoint = "http://%s:%s" % (cfg.CONF.COLLECTOR.analytics_api_ip,
-                                     cfg.CONF.COLLECTOR.analytics_api_port)
-        analytics = analytics_client.Client(endpoint)
-        path = "/analytics/uves/service-instance/"
-        fqdn_uuid = "%s?cfilt=UveLoadbalancer" % member.parent_uuid
-        try:
-            lb_stats = analytics.request(path, fqdn_uuid)
-            member_stats = lb_stats['UveLoadbalancer']['member_stats']
-        except Exception:
-            member_stats = []
-
-        # In case of missing analytics, return ACTIVE
-        if not member_stats:
-            return constants.ACTIVE
-
-        for member_stat in member_stats:
-            if member_stat['uuid'] == member.uuid and \
-                member_stat['status'] == 'ACTIVE':
-                    return member_stat['status']
-
-        return constants.DOWN
 
     def make_dict(self, member, fields=None):
         res = {'id': member.uuid,
@@ -181,12 +163,12 @@ class LoadbalancerMemberManager(ResourceManager):
         return False
 
     def update_object(self, member_db, id, m):
+        try:
+            pool = self._api.loadbalancer_pool_read(id=m['pool_id'])
+        except NoIdError:
+            raise loadbalancer.PoolNotFound(pool_id=m['pool_id'])
+        
         if 'pool_id' in m and self._get_member_pool_id(member_db) != m['pool_id']:
-            try:
-                pool = self._api.loadbalancer_pool_read(id=m['pool_id'])
-            except NoIdError:
-                raise loadbalancer.PoolNotFound(pool_id=m['pool_id'])
-
             db_props = member_db.get_loadbalancer_member_properties()
             members = pool.get_loadbalancer_members()
             for member in members or []:
@@ -200,19 +182,17 @@ class LoadbalancerMemberManager(ResourceManager):
                         port=props.get_protocol_port(),
                         pool=m['pool_id'])
 
-            # delete member from old pool
-            props = member_db.get_loadbalancer_member_properties()
-            obj_uuid = member_db.uuid
-            self._api.loadbalancer_member_delete(id=member_db.uuid)
+        # delete member from old pool
+        props = member_db.get_loadbalancer_member_properties()
+        obj_uuid = member_db.uuid
+        self._api.loadbalancer_member_delete(id=member_db.uuid)
 
-            # create member for the new pool with same uuid and props
-            id_perms = IdPermsType(enable=True)
-            member_obj = LoadbalancerMember(
-                obj_uuid, pool, loadbalancer_member_properties=props,
-                id_perms=id_perms)
-            member_obj.uuid = obj_uuid
-            self._api.loadbalancer_member_create(member_obj)
+        # create member for the new pool with same uuid and props
+        id_perms = IdPermsType(enable=True)
+        member_obj = LoadbalancerMember(
+            obj_uuid, pool, loadbalancer_member_properties=props,
+            id_perms=id_perms)
+        member_obj.uuid = obj_uuid
+        self._api.loadbalancer_member_create(member_obj)
 
-            return True
-
-        return False
+        return True

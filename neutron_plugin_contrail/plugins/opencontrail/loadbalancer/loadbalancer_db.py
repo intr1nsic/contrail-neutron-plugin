@@ -6,12 +6,25 @@ import requests
 import time
 import uuid
 
-from oslo.config import cfg
+try:
+    from oslo.config import cfg
+except ImportError:
+    from oslo_config import cfg
+
 from cfgm_common import analytics_client
 from cfgm_common import exceptions as vnc_exc
 from neutron.common import exceptions as n_exc
-from neutron.extensions import loadbalancer
-from neutron.extensions.loadbalancer import LoadBalancerPluginBase
+
+try:
+    from neutron.extensions import loadbalancer
+except ImportError:
+    from neutron_lbaas.extensions import loadbalancer
+
+try:
+    from neutron.extensions.loadbalancer import LoadBalancerPluginBase
+except ImportError:
+    from neutron_lbaas.extensions.loadbalancer import LoadBalancerPluginBase
+
 from vnc_api.vnc_api import VncApi
 
 import loadbalancer_healthmonitor
@@ -28,7 +41,6 @@ class LoadBalancerPluginDb(LoadBalancerPluginBase):
         admin_tenant_name = cfg.CONF.keystone_authtoken.admin_tenant_name
         api_srvr_ip = cfg.CONF.APISERVER.api_server_ip
         api_srvr_port = cfg.CONF.APISERVER.api_server_port
-        api_srvr_use_ssl= cfg.CONF.APISERVER.use_ssl
         try:
             auth_host = cfg.CONF.keystone_authtoken.auth_host
         except cfg.NoSuchOptError:
@@ -68,8 +80,7 @@ class LoadBalancerPluginDb(LoadBalancerPluginBase):
                      api_srvr_ip, api_srvr_port, api_server_url,
                      auth_host=auth_host, auth_port=auth_port,
                      auth_protocol=auth_protocol, auth_url=auth_url,
-                     auth_type=auth_type, wait_for_connect=True,
-                     api_server_use_ssl=api_srvr_use_ssl)
+                     auth_type=auth_type, wait_for_connect=True)
                 connected = True
             except requests.exceptions.RequestException as e:
                 time.sleep(3)
